@@ -110,7 +110,7 @@ __kernel void prefixsum(__global const int* input,
     temp[2 * threadID] = input[2 * globalID];
     temp[2 * threadID + 1] = input[2 * globalID + 1];
 
-    // UPSWEEP (=reduce phase)
+    // REDUCE (UPSWEEP)
 	offset = upsweep(temp, offset, n);
     
 	barrier(CLK_LOCAL_MEM_FENCE|CLK_GLOBAL_MEM_FENCE);
@@ -162,6 +162,31 @@ void scan_parallel_naive(__global const int * restrict input, __global int * out
         pin  = 1 - pout;
         barrier(CLK_LOCAL_MEM_FENCE);
         temp[pout*n+thread] = temp[pin*n+thread];
+        if (thread >= offset)
+            temp[pout*n+thread] += temp[pin*n+thread - offset];
+    }
+
+    output[thread] = temp[pout*n+thread]; // write output
+}
+
+__kernel 
+void scan_parallel_naive_SAT(__global const int * restrict input, __global int * output, const int n)
+{
+    __global int* temp = output;
+    int pout = 1, pin = 0;
+
+    // load input into temp
+    // This is exclusive scan, so shift right by one and set first elt to 0
+    int thread = get_local_id(0);
+    temp[pout*n + thread] = (thread > 0) ? input[thread-1] : 0;
+    barrier(CLK_LOCAL_MEM_FENCE);
+
+    for (int offset = 1; offset < n; offset *= 2)
+    {
+        pout = 1 - pout; // swap double buffer indices
+        pin  = 1 - pout;
+        barrier(CLK_LOCAL_MEM_FENCE);
+		temp[pout*n+thread] = temp[pin*n+thread];
         if (thread >= offset)
             temp[pout*n+thread] += temp[pin*n+thread - offset];
     }
