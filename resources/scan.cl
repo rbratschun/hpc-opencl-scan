@@ -1,45 +1,40 @@
 #define WARP_SHIFT 4
 #define GRP_SHIFT 8
 #define BANK_OFFSET(n)     ((n) >> WARP_SHIFT + (n) >> GRP_SHIFT)
+
 int upsweep(__local int * temp, int offset, int n)
 {
 	int lid = get_local_id(0);
-        for (int d = n>>1; d > 0; d >>= 1)
-        {   
-            barrier(CLK_LOCAL_MEM_FENCE);
-            if (lid < d)
-            {  
-                int ai = offset * (2*lid + 1)-1;
-                int bi = offset * (2*lid + 2)-1;
-                ai += BANK_OFFSET(ai);
-                bi += BANK_OFFSET(bi);
-                temp[bi] += temp[ai];  
-            }  
-            offset <<= 1; 
+    for (int d = n >> 1; d > 0; d >>= 1) {
+        barrier(CLK_LOCAL_MEM_FENCE);
+        if (lid < d) {
+            int ai = offset * (2 * lid + 1) - 1;
+            int bi = offset * (2 * lid + 2) - 1;
+
+            temp[bi] += temp[ai];
         }
-		return offset;
+        offset *= 2;
+    }
+	return offset;
 }
 
 void downsweep(__local int * temp, int offset, int n)
 {
 	int lid = get_local_id(0);
-	for (int d = 1; d < n; d <<= 1)
-		{  
-			offset >>= 1;  
-			barrier(CLK_LOCAL_MEM_FENCE);
+	for (int d = 1; d < n; d *= 2) {
+        offset >>= 1;
 
-			if (lid < d)
-			{
-				int ai = offset * (2*lid + 1)-1;
-				int bi = offset * (2*lid + 2)-1;
-				ai += BANK_OFFSET(ai);
-				bi += BANK_OFFSET(bi);
-		  
-				int t = temp[ai];  
-				temp[ai] = temp[bi];  
-				temp[bi] += t;   
-			}
-		}
+        barrier(CLK_LOCAL_MEM_FENCE | CLK_GLOBAL_MEM_FENCE);
+
+        if (lid < d) {
+            int ai = offset * (2 * lid + 1) - 1;
+            int bi = offset * (2 * lid + 2) - 1;
+
+            int t = temp[ai];
+            temp[ai] = temp[bi];
+            temp[bi] += t;
+        }
+    }
 }
 
 __kernel void scan_blelloch(__global const int* input,
@@ -90,6 +85,55 @@ __kernel void scan_blelloch(__global const int* input,
 		group_offset += n;
     }
     while(group_offset < (group_id + 1) * block_size);
+}
+
+__kernel void prefixsum(__global const int* input,
+							__global int* output,
+							__local int * temp,
+							__global int * blocksums,
+							const int n)
+{
+	// WORKSPACE
+    int local_size = get_local_size(0);
+    int global_size = get_global_size(0);
+	
+	// ORIENTATION
+	
+	int globalID = get_global_id(0);
+    int groupID = get_group_id(0);
+	int threadID = get_local_id(0);
+    
+
+    int offset = 1;
+
+    // STORE VALUES IN LOCAL MEMORY^
+    temp[2 * threadID] = input[2 * globalID];
+    temp[2 * threadID + 1] = input[2 * globalID + 1];
+
+    // UPSWEEP (=reduce phase)
+	offset = upsweep(temp, offset, n);
+    
+	barrier(CLK_LOCAL_MEM_FENCE|CLK_GLOBAL_MEM_FENCE);
+    if (threadID == 0) {
+        // store last value of block in blocksums array!
+		blocksums[groupID] = temp[local_size * 2 - 1];
+		// exclusive scan ()=> last thread sets last index to zero
+        temp[n - 1] = 0;
+    }
+
+	// DOWNSWEEP PHASE
+	downsweep(temp, offset, n);
+    
+	// der letzte dreht das licht ab
+	barrier(CLK_LOCAL_MEM_FENCE|CLK_GLOBAL_MEM_FENCE);
+    output[globalID * 2] = temp[threadID * 2];
+    output[(globalID * 2) + 1] = temp[(threadID * 2) + 1];
+}
+
+__kernel void addBlockSums(__global int * output, __global int * blockSumsScanned) {
+	int globalID = get_global_id(0);
+	int groupID = get_group_id(0);
+	output[globalID] = output[globalID] + blockSumsScanned[groupID];
 }
 
 __kernel 
