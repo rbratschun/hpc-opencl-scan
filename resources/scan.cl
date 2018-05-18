@@ -1,7 +1,3 @@
-#define WARP_SHIFT 4
-#define GRP_SHIFT 8
-#define BANK_OFFSET(n)     ((n) >> WARP_SHIFT + (n) >> GRP_SHIFT)
-
 int upsweep(__local int * temp, int offset, int n)
 {
 	int lid = get_local_id(0);
@@ -37,56 +33,6 @@ void downsweep(__local int * temp, int offset, int n)
     }
 }
 
-__kernel void scan_blelloch(__global const int* input,
-							__global int* output,
-							__local int * temp,
-							const int block_size)
-{
-    int lid = get_local_id(0);
-    int group_id = get_group_id(0);
-    int n = get_local_size(0) * 2;
- 
-    int group_offset = group_id * block_size;
-    int MAX = 0;
-    do
-    {
-        // CALCULATE INDICES
-        int ai = lid;
-        int bi = lid + (n>>1);
-		// CALCULATE BANK OFFSETS 
-        int bankOffsetA = BANK_OFFSET(ai);
-        int bankOffsetB = BANK_OFFSET(bi);
- 
-        // STORE INTERMEDIATE RESULTS IN LOCAL MEMORY
-        temp[ai + bankOffsetA] = input[group_offset + ai];
-        temp[bi + bankOffsetB] = input[group_offset + bi];
-		
-        // UPSWEEP PHASE (REDUCE)
-		int offset = upsweep(temp, 1, n);
-        
-		// CLEAR LAST ELEMENT
-        if (lid == 0)
-        {
-            temp[n - 1 + BANK_OFFSET(n - 1)] = 0;
-        }
- 
-        // DOWN SWEEP PHASE (SUM UP)
-        downsweep(temp, offset, n);  
-		
-        barrier(CLK_LOCAL_MEM_FENCE);
-        
-		// WRITE BACK TO GLOBAL MEMORY BUFFER
-        output[group_offset + ai] = temp[ai + bankOffsetA] + MAX;
-        output[group_offset + bi] = temp[bi + bankOffsetB] + MAX;
- 
-        // CUMULATIVE PREFIX SUM
-        MAX += temp[n - 1 + BANK_OFFSET(n - 1)] + input[group_offset + n - 1];
-        // GROUP OFFSET FOR NEXT  ITERATION
-		group_offset += n;
-    }
-    while(group_offset < (group_id + 1) * block_size);
-}
-
 __kernel void prefixsum(__global const int* input,
 							__global int* output,
 							__local int * temp,
@@ -99,35 +45,36 @@ __kernel void prefixsum(__global const int* input,
 	
 	// ORIENTATION
 	
-	int globalID = get_global_id(0);
-    int groupID = get_group_id(0);
-	int threadID = get_local_id(0);
-    
-
-    int offset = 1;
+    int group_id= get_group_id(0);
+	int thread_id = get_local_id(0);
+	
+	int group_offset = group_id * local_size;
+   
+   // printf("group_id: %d", group_id);
 
     // STORE VALUES IN LOCAL MEMORY^
-    temp[2 * threadID] = input[2 * globalID];
-    temp[2 * threadID + 1] = input[2 * globalID + 1];
+    temp[thread_id] = input[group_offset + thread_id];
+    temp[thread_id + 1] = input[group_offset + thread_id + 1];
 
-    // REDUCE (UPSWEEP)
-	offset = upsweep(temp, offset, n);
+    // UPSWEEP (=reduce phase)
+	int offset = upsweep(temp, 1, local_size);
+	// printf("offset after reduce: %d", offset);
     
 	barrier(CLK_LOCAL_MEM_FENCE|CLK_GLOBAL_MEM_FENCE);
-    if (threadID == 0) {
+    if (thread_id == 0) {
         // store last value of block in blocksums array!
-		blocksums[groupID] = temp[local_size * 2 - 1];
+		blocksums[group_id] = temp[local_size - 1];
 		// exclusive scan ()=> last thread sets last index to zero
-        temp[n - 1] = 0;
+        temp[local_size - 1] = 0;
     }
 
 	// DOWNSWEEP PHASE
-	downsweep(temp, offset, n);
+	downsweep(temp, offset, local_size);
     
 	// der letzte dreht das licht ab
 	barrier(CLK_LOCAL_MEM_FENCE|CLK_GLOBAL_MEM_FENCE);
-    output[globalID * 2] = temp[threadID * 2];
-    output[(globalID * 2) + 1] = temp[(threadID * 2) + 1];
+    output[group_offset + thread_id] = temp[thread_id];
+    output[group_offset + thread_id + 1] = temp[thread_id + 1];
 }
 
 __kernel void addBlockSums(__global int * output, __global int * blockSumsScanned) {
@@ -137,7 +84,7 @@ __kernel void addBlockSums(__global int * output, __global int * blockSumsScanne
 }
 
 __kernel 
-void scan_exclusive_sequential(__global const int * restrict input, __global int * output,const  int n) {
+void scan(__global const int * restrict input, __global int * output,const  int n) {
   output[0] = 0;
   for (int i=1; i<n; i++) {
     output[i] = output[i-1] + input[i-1];
