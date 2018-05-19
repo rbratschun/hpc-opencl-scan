@@ -34,21 +34,21 @@ void downsweep(__local int * temp, int offset, int n)
 }
 
 __kernel void prefixsum(__global const int* input,
-							__global int* output,
-							__local int * temp,
-							__global int * blocksums,
-							const int n)
+                            __global int* output,
+                            __local int * temp,
+                            __global int * blocksums,
+                            const int n)
 {
-	// WORKSPACE
+    // WORKSPACE
     int local_size = get_local_size(0);
     int global_size = get_global_size(0);
-	
-	// ORIENTATION
-	
+    
+    // ORIENTATION
+    
     int group_id= get_group_id(0);
-	int thread_id = get_local_id(0);
-	
-	int group_offset = group_id * local_size;
+    int thread_id = get_local_id(0);
+    
+    int group_offset = group_id * local_size;
    
    // printf("group_id: %d", group_id);
 
@@ -57,30 +57,30 @@ __kernel void prefixsum(__global const int* input,
     temp[thread_id + 1] = input[group_offset + thread_id + 1];
 
     // UPSWEEP (=reduce phase)
-	int offset = upsweep(temp, 1, local_size);
-	// printf("offset after reduce: %d", offset);
+    int offset = upsweep(temp, 1, local_size);
+    // printf("offset after reduce: %d", offset);
     
-	barrier(CLK_LOCAL_MEM_FENCE|CLK_GLOBAL_MEM_FENCE);
+    barrier(CLK_LOCAL_MEM_FENCE|CLK_GLOBAL_MEM_FENCE);
     if (thread_id == 0) {
         // store last value of block in blocksums array!
-		blocksums[group_id] = temp[local_size - 1];
-		// exclusive scan ()=> last thread sets last index to zero
+        blocksums[group_id] = temp[local_size - 1];
+        // exclusive scan ()=> last thread sets last index to zero
         temp[local_size - 1] = 0;
     }
 
-	// DOWNSWEEP PHASE
-	downsweep(temp, offset, local_size);
+    // DOWNSWEEP PHASE
+    downsweep(temp, offset, local_size);
     
-	// der letzte dreht das licht ab
-	barrier(CLK_LOCAL_MEM_FENCE|CLK_GLOBAL_MEM_FENCE);
+    // der letzte dreht das licht ab
+    barrier(CLK_LOCAL_MEM_FENCE|CLK_GLOBAL_MEM_FENCE);
     output[group_offset + thread_id] = temp[thread_id];
     output[group_offset + thread_id + 1] = temp[thread_id + 1];
 }
 
 __kernel void addBlockSums(__global int * output, __global int * blockSumsScanned) {
-	int globalID = get_global_id(0);
-	int groupID = get_group_id(0);
-	output[globalID] = output[globalID] + blockSumsScanned[groupID];
+    int globalID = get_global_id(0);
+    int groupID = get_group_id(0);
+    output[globalID] = output[globalID] + blockSumsScanned[groupID];
 }
 
 __kernel 
@@ -100,13 +100,13 @@ void scan_parallel_naive(__global const int * restrict input, __global int * out
     int thread = get_local_id(0);
     temp[pout*n + thread] = (thread > 0) ? input[thread-1] : 0;
     
-	barrier(CLK_LOCAL_MEM_FENCE);
+    barrier(CLK_LOCAL_MEM_FENCE);
     for (int offset = 1; offset < n; offset *= 2)
     {
         pout = 1 - pout; // swap double buffer indices
         pin  = 1 - pout;
         
-		barrier(CLK_LOCAL_MEM_FENCE);
+        barrier(CLK_LOCAL_MEM_FENCE);
         temp[pout*n+thread] = temp[pin*n+thread];
         if (thread >= offset)
             temp[pout*n+thread] += temp[pin*n+thread - offset];
@@ -124,14 +124,14 @@ void scan_parallel_naive_SAT(__global const int * restrict input, __global int *
     int thread = get_local_id(0);
     temp[pout*n + thread] = (thread > 0) ? input[thread-1] : 0;
     
-	barrier(CLK_LOCAL_MEM_FENCE);
+    barrier(CLK_LOCAL_MEM_FENCE);
     for (int offset = 1; offset < n; offset *= 2)
     {
         pout = 1 - pout; // swap double buffer indices
         pin  = 1 - pout;
         
-		barrier(CLK_LOCAL_MEM_FENCE);
-		temp[pout*n+thread] = temp[pin*n+thread];
+        barrier(CLK_LOCAL_MEM_FENCE);
+        temp[pout*n+thread] = temp[pin*n+thread];
         if (thread >= offset)
             temp[pout*n+thread] += temp[pin*n+thread - offset];
     }
